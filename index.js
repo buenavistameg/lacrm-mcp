@@ -263,16 +263,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const app = express();
 
+// CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Cache-Control, mcp-session-id");
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
+  if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
+// OAuth 2.1 endpoints (required by Claude's MCP connector)
+const authCodes = new Map();
+
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({
+    issuer: base,
+    authorization_endpoint: `${base}/authorize`,
+    token_endpoint: `${base}/token`,
+    registration_endpoint: `${base}/register`,
+    scopes_supported: ["mcp"],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  });
+});
+
+app.get("/.well-known/oauth-protected-resource", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({
+    resource: base,
+    authorization_servers: [base],
+    scopes_supported: ["mcp"],
+  });
+});
+
+app.post("/register", express.json(), (req, res) => {
+  res.status(201).json({
+    client_id: "claude-mcp-" + Date.now(),
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    ...(req.body || {}),
+  });
+});
+
+app.get("/authorize", (req, res) => {
+  const { redirect_uri, state } = req.query;
+  if (!redirect_uri) return res.status(400).send("Missing redirect_uri");
+  const code = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  authCodes.set(code, { created: Date.now() });
+  for (const [k, v] of authCodes) {
+    if (Date.now() - v.created > 600_000) authCodes.delete(k);
+  }
+  const url = new URL(redirect_uri);
+  url.searchParams.set("code", code);
+  if (state) url.searchParams.set("state", state);
+  res.redirect(url.toString());
+});
+
+app.post("/token", express.urlencoded({ extended: true }), express.json(), (req, res) => {
+  res.json({
+    access_token: "lacrm-token-" + Date.now(),
+    token_type: "Bearer",
+    expires_in: 86400,
+    scope: "mcp",
+  });
+});
+
+// MCP SSE transport
 const transports = {};
 
 app.get("/sse", async (req, res) => {
@@ -283,9 +341,7 @@ app.get("/sse", async (req, res) => {
     await server.connect(transport);
   } catch (error) {
     console.error("SSE connection error:", error);
-    if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
-    }
+    if (!res.headersSent) res.status(500).json({ error: error.message });
   }
 });
 
