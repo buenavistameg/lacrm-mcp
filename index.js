@@ -1,4 +1,3 @@
-Index · JS
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
@@ -6,15 +5,15 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
- 
+
 const API_KEY = process.env.LACRM_API_KEY;
 const USER_ID = process.env.LACRM_USER_ID;
- 
+
 if (!API_KEY || !USER_ID) {
   console.error("Missing LACRM_API_KEY or LACRM_USER_ID environment variables.");
   process.exit(1);
 }
- 
+
 async function lacrmCall(functionName, parameters = {}) {
   const response = await fetch("https://api.lessannoyingcrm.com/v2/", {
     method: "POST",
@@ -31,12 +30,12 @@ async function lacrmCall(functionName, parameters = {}) {
   if (data.ErrorCode) throw new Error(data.ErrorDescription);
   return data;
 }
- 
+
 const server = new Server(
   { name: "lacrm-mcp", version: "1.0.0" },
   { capabilities: { tools: {} } }
 );
- 
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -166,10 +165,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
   ],
 }));
- 
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
- 
+
   try {
     switch (name) {
       case "get_tasks": {
@@ -180,7 +179,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
- 
+
       case "create_task": {
         const params = {
           Name: args.name,
@@ -191,17 +190,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = await lacrmCall("CreateTask", params);
         return { content: [{ type: "text", text: `Task created. ID: ${result.TaskId}` }] };
       }
- 
+
       case "complete_task": {
         await lacrmCall("EditTask", { TaskId: args.task_id, IsCompleted: true });
         return { content: [{ type: "text", text: "Task marked as completed." }] };
       }
- 
+
       case "reschedule_task": {
         await lacrmCall("EditTask", { TaskId: args.task_id, DueDate: args.new_date });
         return { content: [{ type: "text", text: `Task rescheduled to ${args.new_date}.` }] };
       }
- 
+
       case "get_events": {
         const result = await lacrmCall("GetEvents", {
           StartDate: args.start_date,
@@ -209,7 +208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
- 
+
       case "create_event": {
         const result = await lacrmCall("CreateEvent", {
           Name: args.name,
@@ -220,17 +219,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: "text", text: `Event created. ID: ${result.EventId}` }] };
       }
- 
+
       case "search_contacts": {
         const result = await lacrmCall("GetContacts", { SearchTerms: args.search_terms });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
- 
+
       case "get_contact": {
         const result = await lacrmCall("GetContact", { ContactId: args.contact_id });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
- 
+
       case "create_contact": {
         const params = {
           Name: args.name,
@@ -242,7 +241,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = await lacrmCall("CreateContact", params);
         return { content: [{ type: "text", text: `Contact created. ID: ${result.ContactId}` }] };
       }
- 
+
       case "create_note": {
         const result = await lacrmCall("CreateNote", {
           ContactId: args.contact_id,
@@ -250,7 +249,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         return { content: [{ type: "text", text: `Note added. ID: ${result.NoteId}` }] };
       }
- 
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -261,20 +260,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 });
- 
-// Express app for SSE transport
+
 const app = express();
- 
-// CORS — required for Claude to connect from the browser
- app.use((req, res, next) => {
-     res.header("Access-Control-Allow-Origin", "*");
-     res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-     res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept");
-     if (req.method === "OPTIONS") return res.sendStatus(200);
-     next();
-   });
+
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Cache-Control, mcp-session-id");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 const transports = {};
- 
+
 app.get("/sse", async (req, res) => {
   try {
     const transport = new SSEServerTransport("/messages", res);
@@ -288,7 +288,7 @@ app.get("/sse", async (req, res) => {
     }
   }
 });
- 
+
 app.post("/messages", express.json(), async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = transports[sessionId];
@@ -298,10 +298,8 @@ app.post("/messages", express.json(), async (req, res) => {
     res.status(400).send("Session not found");
   }
 });
- 
+
 app.get("/health", (req, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
- 
-// IMPORTANT: listen on 0.0.0.0 so Railway can route traffic to the server
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => console.log(`LACRM MCP server running on port ${PORT}`));
- 
