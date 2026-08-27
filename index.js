@@ -1,9 +1,11 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "crypto";
 import express from "express";
 
 const API_KEY = process.env.LACRM_API_KEY;
@@ -31,239 +33,236 @@ async function lacrmCall(functionName, parameters = {}) {
   return data;
 }
 
-const server = new Server(
-  { name: "lacrm-mcp", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "get_tasks",
-      description: "Get tasks from Less Annoying CRM within a date range",
-      inputSchema: {
-        type: "object",
-        properties: {
-          start_date: { type: "string", description: "Start date YYYY-MM-DD" },
-          end_date: { type: "string", description: "End date YYYY-MM-DD" },
-          include_completed: { type: "boolean", description: "Include completed tasks (default false)" },
-        },
-        required: ["start_date", "end_date"],
+const TOOLS = [
+  {
+    name: "get_tasks",
+    description: "Get tasks from Less Annoying CRM within a date range",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start_date: { type: "string", description: "Start date YYYY-MM-DD" },
+        end_date: { type: "string", description: "End date YYYY-MM-DD" },
+        include_completed: { type: "boolean", description: "Include completed tasks (default false)" },
       },
+      required: ["start_date", "end_date"],
     },
-    {
-      name: "create_task",
-      description: "Create a new task in Less Annoying CRM",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Task name" },
-          due_date: { type: "string", description: "Due date YYYY-MM-DD" },
-          description: { type: "string", description: "Task notes/description" },
-          contact_id: { type: "string", description: "Optional contact ID to link task to" },
-        },
-        required: ["name", "due_date"],
+  },
+  {
+    name: "create_task",
+    description: "Create a new task in Less Annoying CRM",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Task name" },
+        due_date: { type: "string", description: "Due date YYYY-MM-DD" },
+        description: { type: "string", description: "Task notes/description" },
+        contact_id: { type: "string", description: "Optional contact ID to link task to" },
       },
+      required: ["name", "due_date"],
     },
-    {
-      name: "complete_task",
-      description: "Mark a task as completed",
-      inputSchema: {
-        type: "object",
-        properties: {
-          task_id: { type: "string", description: "The task ID to mark complete" },
-        },
-        required: ["task_id"],
+  },
+  {
+    name: "complete_task",
+    description: "Mark a task as completed",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The task ID to mark complete" },
       },
+      required: ["task_id"],
     },
-    {
-      name: "reschedule_task",
-      description: "Change the due date of a task",
-      inputSchema: {
-        type: "object",
-        properties: {
-          task_id: { type: "string", description: "The task ID to reschedule" },
-          new_date: { type: "string", description: "New due date YYYY-MM-DD" },
-        },
-        required: ["task_id", "new_date"],
+  },
+  {
+    name: "reschedule_task",
+    description: "Change the due date of a task",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_id: { type: "string", description: "The task ID to reschedule" },
+        new_date: { type: "string", description: "New due date YYYY-MM-DD" },
       },
+      required: ["task_id", "new_date"],
     },
-    {
-      name: "get_events",
-      description: "Get calendar events from Less Annoying CRM",
-      inputSchema: {
-        type: "object",
-        properties: {
-          start_date: { type: "string", description: "Start date YYYY-MM-DD" },
-          end_date: { type: "string", description: "End date YYYY-MM-DD" },
-        },
-        required: ["start_date", "end_date"],
+  },
+  {
+    name: "get_events",
+    description: "Get calendar events from Less Annoying CRM",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start_date: { type: "string", description: "Start date YYYY-MM-DD" },
+        end_date: { type: "string", description: "End date YYYY-MM-DD" },
       },
+      required: ["start_date", "end_date"],
     },
-    {
-      name: "create_event",
-      description: "Create a calendar event in Less Annoying CRM",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Event name" },
-          start_date: { type: "string", description: "Start datetime ISO format e.g. 2026-09-01T09:00:00" },
-          end_date: { type: "string", description: "End datetime ISO format e.g. 2026-09-01T10:00:00" },
-          description: { type: "string", description: "Event description" },
-          location: { type: "string", description: "Event location" },
-        },
-        required: ["name", "start_date", "end_date"],
+  },
+  {
+    name: "create_event",
+    description: "Create a calendar event in Less Annoying CRM",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Event name" },
+        start_date: { type: "string", description: "Start datetime ISO format e.g. 2026-09-01T09:00:00" },
+        end_date: { type: "string", description: "End datetime ISO format e.g. 2026-09-01T10:00:00" },
+        description: { type: "string", description: "Event description" },
+        location: { type: "string", description: "Event location" },
       },
+      required: ["name", "start_date", "end_date"],
     },
-    {
-      name: "search_contacts",
-      description: "Search for contacts in Less Annoying CRM by name, email, or phone",
-      inputSchema: {
-        type: "object",
-        properties: {
-          search_terms: { type: "string", description: "Name, email, or phone to search" },
-        },
-        required: ["search_terms"],
+  },
+  {
+    name: "search_contacts",
+    description: "Search for contacts in Less Annoying CRM by name, email, or phone",
+    inputSchema: {
+      type: "object",
+      properties: {
+        search_terms: { type: "string", description: "Name, email, or phone to search" },
       },
+      required: ["search_terms"],
     },
-    {
-      name: "get_contact",
-      description: "Get full details for a specific contact",
-      inputSchema: {
-        type: "object",
-        properties: {
-          contact_id: { type: "string", description: "The contact ID" },
-        },
-        required: ["contact_id"],
+  },
+  {
+    name: "get_contact",
+    description: "Get full details for a specific contact",
+    inputSchema: {
+      type: "object",
+      properties: {
+        contact_id: { type: "string", description: "The contact ID" },
       },
+      required: ["contact_id"],
     },
-    {
-      name: "create_contact",
-      description: "Create a new contact in Less Annoying CRM",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Full name of the contact" },
-          email: { type: "string", description: "Email address" },
-          phone: { type: "string", description: "Phone number" },
-          is_company: { type: "boolean", description: "True if this is a company, false for a person (default false)" },
-        },
-        required: ["name"],
+  },
+  {
+    name: "create_contact",
+    description: "Create a new contact in Less Annoying CRM",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Full name of the contact" },
+        email: { type: "string", description: "Email address" },
+        phone: { type: "string", description: "Phone number" },
+        is_company: { type: "boolean", description: "True if this is a company, false for a person (default false)" },
       },
+      required: ["name"],
     },
-    {
-      name: "create_note",
-      description: "Add a note to a contact in Less Annoying CRM",
-      inputSchema: {
-        type: "object",
-        properties: {
-          contact_id: { type: "string", description: "The contact ID to add the note to" },
-          note: { type: "string", description: "The note text" },
-        },
-        required: ["contact_id", "note"],
+  },
+  {
+    name: "create_note",
+    description: "Add a note to a contact in Less Annoying CRM",
+    inputSchema: {
+      type: "object",
+      properties: {
+        contact_id: { type: "string", description: "The contact ID to add the note to" },
+        note: { type: "string", description: "The note text" },
       },
+      required: ["contact_id", "note"],
     },
-  ],
-}));
+  },
+];
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  try {
-    switch (name) {
-      case "get_tasks": {
-        const result = await lacrmCall("GetTasks", {
-          StartDate: args.start_date,
-          EndDate: args.end_date,
-          IncludeCompleted: args.include_completed ?? false,
-        });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      }
-
-      case "create_task": {
-        const params = {
-          Name: args.name,
-          DueDate: args.due_date,
-          Description: args.description || "",
-        };
-        if (args.contact_id) params.ContactId = args.contact_id;
-        const result = await lacrmCall("CreateTask", params);
-        return { content: [{ type: "text", text: `Task created. ID: ${result.TaskId}` }] };
-      }
-
-      case "complete_task": {
-        await lacrmCall("EditTask", { TaskId: args.task_id, IsCompleted: true });
-        return { content: [{ type: "text", text: "Task marked as completed." }] };
-      }
-
-      case "reschedule_task": {
-        await lacrmCall("EditTask", { TaskId: args.task_id, DueDate: args.new_date });
-        return { content: [{ type: "text", text: `Task rescheduled to ${args.new_date}.` }] };
-      }
-
-      case "get_events": {
-        const result = await lacrmCall("GetEvents", {
-          StartDate: args.start_date,
-          EndDate: args.end_date,
-        });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      }
-
-      case "create_event": {
-        const result = await lacrmCall("CreateEvent", {
-          Name: args.name,
-          StartDate: args.start_date,
-          EndDate: args.end_date,
-          Description: args.description || "",
-          Location: args.location || "",
-        });
-        return { content: [{ type: "text", text: `Event created. ID: ${result.EventId}` }] };
-      }
-
-      case "search_contacts": {
-        const result = await lacrmCall("GetContacts", { SearchTerms: args.search_terms });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      }
-
-      case "get_contact": {
-        const result = await lacrmCall("GetContact", { ContactId: args.contact_id });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      }
-
-      case "create_contact": {
-        const params = {
-          Name: args.name,
-          IsCompany: args.is_company ?? false,
-          AssignedTo: USER_ID,
-        };
-        if (args.email) params.Email = [{ Text: args.email, Type: "Work" }];
-        if (args.phone) params.Phone = [{ Text: args.phone, Type: "Work" }];
-        const result = await lacrmCall("CreateContact", params);
-        return { content: [{ type: "text", text: `Contact created. ID: ${result.ContactId}` }] };
-      }
-
-      case "create_note": {
-        const result = await lacrmCall("CreateNote", {
-          ContactId: args.contact_id,
-          Note: args.note,
-        });
-        return { content: [{ type: "text", text: `Note added. ID: ${result.NoteId}` }] };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
+async function handleToolCall(name, args) {
+  switch (name) {
+    case "get_tasks": {
+      const result = await lacrmCall("GetTasks", {
+        StartDate: args.start_date,
+        EndDate: args.end_date,
+        IncludeCompleted: args.include_completed ?? false,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
-  } catch (error) {
-    return {
-      content: [{ type: "text", text: `Error: ${error.message}` }],
-      isError: true,
-    };
+    case "create_task": {
+      const params = {
+        Name: args.name,
+        DueDate: args.due_date,
+        Description: args.description || "",
+      };
+      if (args.contact_id) params.ContactId = args.contact_id;
+      const result = await lacrmCall("CreateTask", params);
+      return { content: [{ type: "text", text: `Task created. ID: ${result.TaskId}` }] };
+    }
+    case "complete_task": {
+      await lacrmCall("EditTask", { TaskId: args.task_id, IsCompleted: true });
+      return { content: [{ type: "text", text: "Task marked as completed." }] };
+    }
+    case "reschedule_task": {
+      await lacrmCall("EditTask", { TaskId: args.task_id, DueDate: args.new_date });
+      return { content: [{ type: "text", text: `Task rescheduled to ${args.new_date}.` }] };
+    }
+    case "get_events": {
+      const result = await lacrmCall("GetEvents", {
+        StartDate: args.start_date,
+        EndDate: args.end_date,
+      });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    case "create_event": {
+      const result = await lacrmCall("CreateEvent", {
+        Name: args.name,
+        StartDate: args.start_date,
+        EndDate: args.end_date,
+        Description: args.description || "",
+        Location: args.location || "",
+      });
+      return { content: [{ type: "text", text: `Event created. ID: ${result.EventId}` }] };
+    }
+    case "search_contacts": {
+      const result = await lacrmCall("GetContacts", { SearchTerms: args.search_terms });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    case "get_contact": {
+      const result = await lacrmCall("GetContact", { ContactId: args.contact_id });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    }
+    case "create_contact": {
+      const params = {
+        Name: args.name,
+        IsCompany: args.is_company ?? false,
+        AssignedTo: USER_ID,
+      };
+      if (args.email) params.Email = [{ Text: args.email, Type: "Work" }];
+      if (args.phone) params.Phone = [{ Text: args.phone, Type: "Work" }];
+      const result = await lacrmCall("CreateContact", params);
+      return { content: [{ type: "text", text: `Contact created. ID: ${result.ContactId}` }] };
+    }
+    case "create_note": {
+      const result = await lacrmCall("CreateNote", {
+        ContactId: args.contact_id,
+        Note: args.note,
+      });
+      return { content: [{ type: "text", text: `Note added. ID: ${result.NoteId}` }] };
+    }
+    default:
+      throw new Error(`Unknown tool: ${name}`);
   }
-});
+}
+
+function createMcpServer() {
+  const srv = new Server(
+    { name: "lacrm-mcp", version: "1.0.0" },
+    { capabilities: { tools: {} } }
+  );
+
+  srv.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+  srv.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    try {
+      return await handleToolCall(name, args);
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error: ${error.message}` }],
+        isError: true,
+      };
+    }
+  });
+
+  return srv;
+}
 
 const app = express();
 
-// CORS
+// CORS — required for Claude to connect
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -272,7 +271,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// OAuth 2.1 endpoints (required by Claude's MCP connector)
+// ── OAuth 2.1 endpoints ───────────────────────────────────────────────────────
+
 const authCodes = new Map();
 
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
@@ -330,15 +330,79 @@ app.post("/token", express.urlencoded({ extended: true }), express.json(), (req,
   });
 });
 
-// MCP SSE transport
-const transports = {};
+// ── Streamable HTTP transport (what Claude's connector uses) ──────────────────
+
+const httpSessions = new Map();
+
+app.post("/mcp", express.json(), async (req, res) => {
+  try {
+    const sessionId = req.headers["mcp-session-id"];
+
+    if (sessionId && httpSessions.has(sessionId)) {
+      const { transport } = httpSessions.get(sessionId);
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        httpSessions.set(id, { transport });
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) httpSessions.delete(transport.sessionId);
+    };
+
+    const srv = createMcpServer();
+    await srv.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error("MCP POST error:", error);
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/mcp", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"];
+  const session = httpSessions.get(sessionId);
+  if (!session) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+  try {
+    await session.transport.handleRequest(req, res);
+  } catch (error) {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/mcp", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"];
+  const session = httpSessions.get(sessionId);
+  if (!session) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+  try {
+    await session.transport.handleRequest(req, res);
+  } catch (error) {
+    if (!res.headersSent) res.status(500).json({ error: error.message });
+  }
+  httpSessions.delete(sessionId);
+});
+
+// ── SSE transport (legacy) ────────────────────────────────────────────────────
+
+const sseTransports = {};
 
 app.get("/sse", async (req, res) => {
   try {
     const transport = new SSEServerTransport("/messages", res);
-    transports[transport.sessionId] = transport;
-    res.on("close", () => delete transports[transport.sessionId]);
-    await server.connect(transport);
+    sseTransports[transport.sessionId] = transport;
+    res.on("close", () => delete sseTransports[transport.sessionId]);
+    const srv = createMcpServer();
+    await srv.connect(transport);
   } catch (error) {
     console.error("SSE connection error:", error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -347,7 +411,7 @@ app.get("/sse", async (req, res) => {
 
 app.post("/messages", express.json(), async (req, res) => {
   const sessionId = req.query.sessionId;
-  const transport = transports[sessionId];
+  const transport = sseTransports[sessionId];
   if (transport) {
     await transport.handlePostMessage(req, res);
   } else {
