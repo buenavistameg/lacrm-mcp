@@ -1,11 +1,9 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { randomUUID } from "crypto";
 import express from "express";
 
 const API_KEY = process.env.LACRM_API_KEY;
@@ -172,11 +170,7 @@ async function handleToolCall(name, args) {
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
     case "create_task": {
-      const params = {
-        Name: args.name,
-        DueDate: args.due_date,
-        Description: args.description || "",
-      };
+      const params = { Name: args.name, DueDate: args.due_date, Description: args.description || "" };
       if (args.contact_id) params.ContactId = args.contact_id;
       const result = await lacrmCall("CreateTask", params);
       return { content: [{ type: "text", text: `Task created. ID: ${result.TaskId}` }] };
@@ -190,19 +184,13 @@ async function handleToolCall(name, args) {
       return { content: [{ type: "text", text: `Task rescheduled to ${args.new_date}.` }] };
     }
     case "get_events": {
-      const result = await lacrmCall("GetEvents", {
-        StartDate: args.start_date,
-        EndDate: args.end_date,
-      });
+      const result = await lacrmCall("GetEvents", { StartDate: args.start_date, EndDate: args.end_date });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
     case "create_event": {
       const result = await lacrmCall("CreateEvent", {
-        Name: args.name,
-        StartDate: args.start_date,
-        EndDate: args.end_date,
-        Description: args.description || "",
-        Location: args.location || "",
+        Name: args.name, StartDate: args.start_date, EndDate: args.end_date,
+        Description: args.description || "", Location: args.location || "",
       });
       return { content: [{ type: "text", text: `Event created. ID: ${result.EventId}` }] };
     }
@@ -215,21 +203,14 @@ async function handleToolCall(name, args) {
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
     case "create_contact": {
-      const params = {
-        Name: args.name,
-        IsCompany: args.is_company ?? false,
-        AssignedTo: USER_ID,
-      };
+      const params = { Name: args.name, IsCompany: args.is_company ?? false, AssignedTo: USER_ID };
       if (args.email) params.Email = [{ Text: args.email, Type: "Work" }];
       if (args.phone) params.Phone = [{ Text: args.phone, Type: "Work" }];
       const result = await lacrmCall("CreateContact", params);
       return { content: [{ type: "text", text: `Contact created. ID: ${result.ContactId}` }] };
     }
     case "create_note": {
-      const result = await lacrmCall("CreateNote", {
-        ContactId: args.contact_id,
-        Note: args.note,
-      });
+      const result = await lacrmCall("CreateNote", { ContactId: args.contact_id, Note: args.note });
       return { content: [{ type: "text", text: `Note added. ID: ${result.NoteId}` }] };
     }
     default:
@@ -237,32 +218,9 @@ async function handleToolCall(name, args) {
   }
 }
 
-function createMcpServer() {
-  const srv = new Server(
-    { name: "lacrm-mcp", version: "1.0.0" },
-    { capabilities: { tools: {} } }
-  );
-
-  srv.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-  srv.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    try {
-      return await handleToolCall(name, args);
-    } catch (error) {
-      return {
-        content: [{ type: "text", text: `Error: ${error.message}` }],
-        isError: true,
-      };
-    }
-  });
-
-  return srv;
-}
-
 const app = express();
 
-// CORS — required for Claude to connect
+// CORS
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -330,79 +288,75 @@ app.post("/token", express.urlencoded({ extended: true }), express.json(), (req,
   });
 });
 
-// ── Streamable HTTP transport (what Claude's connector uses) ──────────────────
-
-const httpSessions = new Map();
+// ── Streamable HTTP — raw JSON-RPC (no SDK transport needed) ──────────────────
 
 app.post("/mcp", express.json(), async (req, res) => {
-  try {
-    const sessionId = req.headers["mcp-session-id"];
+  const { jsonrpc, id, method, params } = req.body;
 
-    if (sessionId && httpSessions.has(sessionId)) {
-      const { transport } = httpSessions.get(sessionId);
-      await transport.handleRequest(req, res, req.body);
-      return;
+  // Notifications are one-way — no response
+  if (method && method.startsWith("notifications/")) {
+    return res.status(204).end();
+  }
+
+  const reply = (result) => res.json({ jsonrpc: "2.0", id, result });
+  const error = (code, message) => res.json({ jsonrpc: "2.0", id, error: { code, message } });
+
+  try {
+    switch (method) {
+      case "initialize":
+        res.set("mcp-session-id", "lacrm-" + Date.now());
+        return reply({
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "lacrm-mcp", version: "1.0.0" },
+        });
+
+      case "tools/list":
+        return reply({ tools: TOOLS });
+
+      case "tools/call": {
+        const result = await handleToolCall(params.name, params.arguments || {});
+        return reply(result);
+      }
+
+      case "ping":
+        return reply({});
+
+      default:
+        return error(-32601, `Method not found: ${method}`);
     }
-
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (id) => {
-        httpSessions.set(id, { transport });
-      },
-    });
-    transport.onclose = () => {
-      if (transport.sessionId) httpSessions.delete(transport.sessionId);
-    };
-
-    const srv = createMcpServer();
-    await srv.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  } catch (error) {
-    console.error("MCP POST error:", error);
-    if (!res.headersSent) res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error("MCP error:", err);
+    return error(-32000, err.message);
   }
 });
 
-app.get("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"];
-  const session = httpSessions.get(sessionId);
-  if (!session) {
-    res.status(404).json({ error: "Session not found" });
-    return;
-  }
+// ── SSE transport (legacy fallback) ──────────────────────────────────────────
+
+const server = new Server(
+  { name: "lacrm-mcp", version: "1.0.0" },
+  { capabilities: { tools: {} } }
+);
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
   try {
-    await session.transport.handleRequest(req, res);
+    return await handleToolCall(name, args);
   } catch (error) {
-    if (!res.headersSent) res.status(500).json({ error: error.message });
+    return { content: [{ type: "text", text: `Error: ${error.message}` }], isError: true };
   }
 });
 
-app.delete("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"];
-  const session = httpSessions.get(sessionId);
-  if (!session) {
-    res.status(404).json({ error: "Session not found" });
-    return;
-  }
-  try {
-    await session.transport.handleRequest(req, res);
-  } catch (error) {
-    if (!res.headersSent) res.status(500).json({ error: error.message });
-  }
-  httpSessions.delete(sessionId);
-});
-
-// ── SSE transport (legacy) ────────────────────────────────────────────────────
-
-const sseTransports = {};
+const transports = {};
 
 app.get("/sse", async (req, res) => {
   try {
     const transport = new SSEServerTransport("/messages", res);
-    sseTransports[transport.sessionId] = transport;
-    res.on("close", () => delete sseTransports[transport.sessionId]);
-    const srv = createMcpServer();
-    await srv.connect(transport);
+    transports[transport.sessionId] = transport;
+    res.on("close", () => delete transports[transport.sessionId]);
+    await server.connect(transport);
   } catch (error) {
     console.error("SSE connection error:", error);
     if (!res.headersSent) res.status(500).json({ error: error.message });
@@ -411,7 +365,7 @@ app.get("/sse", async (req, res) => {
 
 app.post("/messages", express.json(), async (req, res) => {
   const sessionId = req.query.sessionId;
-  const transport = sseTransports[sessionId];
+  const transport = transports[sessionId];
   if (transport) {
     await transport.handlePostMessage(req, res);
   } else {
