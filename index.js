@@ -289,7 +289,16 @@ app.post("/token", express.urlencoded({ extended: true }), express.json(), (req,
 });
 
 // ── Streamable HTTP — raw JSON-RPC (no SDK transport needed) ──────────────────
-
+app.get("/mcp", (req, res) => {
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+  });
+  res.flushHeaders();
+  const heartbeat = setInterval(() => res.write(": ping\n\n"), 30000);
+  req.on("close", () => clearInterval(heartbeat));
+});
 app.post("/mcp", express.json(), async (req, res) => {
   const { jsonrpc, id, method, params } = req.body;
 
